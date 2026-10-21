@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SiteLens · SEO Analyzer</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-main">
+      <div class="logo">S</div>
+      <div class="brand"><strong>SiteLens</strong><small>SEO INSIGHTS + SITEMAP WATCH</small></div>
+      <button id="refresh" class="icon-button" aria-label="重新分析当前网页" title="重新分析当前网页">↻</button>
+    </div>
+    <div class="site-line">
+      <div class="site-identity"><div id="site-host" class="site-host">读取当前页面…</div><div id="site-url" class="site-url"></div></div>
+      <span id="site-status" class="site-status">待分析</span>
+    </div>
+  </header>
+  <nav class="tabs" aria-label="SiteLens 功能栏目" id="tabs">
+    <button data-tab="overview" class="active">总览</button>
+    <button data-tab="issues">问题</button>
+    <button data-tab="headings">标题</button>
+    <button data-tab="density">关键词</button>
+    <button data-tab="images">图片</button>
+    <button data-tab="links">链接</button>
+    <button data-tab="structured">结构化</button>
+    <button data-tab="domain">域名</button>
+    <button data-tab="sitemap">Sitemap</button>
+  </nav>
+  <main id="content" class="content"><p class="loading">正在分析当前网页…</p></main>
+  <footer class="footer"><span>本地 SEO 分析 · 无付费 API</span><button id="dashboard" class="text-button">监控后台 ↗</button></footer>
+  <script src="db.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

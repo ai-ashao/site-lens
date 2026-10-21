@@ -1,26 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "SiteLens — SEO Competitor Monitor",
-  "version": "0.1.0",
-  "description": "Track competitor sitemaps, new URLs and SEO changes locally, without paid APIs.",
+  "name": "SiteLens — SEO Analyzer & Sitemap Monitor",
+  "version": "0.2.0",
+  "description": "Free on-page SEO analyzer, domain WHOIS/RDAP, and local competitor sitemap change monitoring.",
   "minimum_chrome_version": "116",
-  "permissions": [
-    "storage",
-    "alarms",
-    "tabs",
-    "offscreen",
-    "unlimitedStorage"
-  ],
-  "host_permissions": [
-    "https://*/*",
-    "http://*/*"
-  ],
-  "background": {
-    "service_worker": "background.js"
-  },
-  "action": {
-    "default_title": "SiteLens",
-    "default_popup": "popup.html"
-  },
+  "permissions": ["storage", "alarms", "tabs", "scripting", "sidePanel", "offscreen", "unlimitedStorage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Open SiteLens SEO Panel"},
+  "side_panel": {"default_path": "sidepanel.html"},
   "options_page": "dashboard.html"
 }

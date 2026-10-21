@@ -1,4 +1,6 @@
 importScripts("db.js","sitemap.js");
+// Click the extension icon to open its right-hand Chrome side panel.
+chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(console.error);
 const ALARM="sitelens-daily"; const running=new Set();
 async function initAlarm(){
   const alarm=await chrome.alarms.get(ALARM);
