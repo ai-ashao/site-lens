@@ -1,11 +1,13 @@
 /* Shared by extension service worker and dashboard. IndexedDB is local-only. */
 const SiteLensDB = (() => {
-  const NAME = "sitelens"; const VERSION = 1;
+  const NAME = "sitelens"; const VERSION = 2;
   function open() {
     return new Promise((resolve,reject)=>{
       const req=indexedDB.open(NAME,VERSION);
       req.onupgradeneeded=()=>{
         const db=req.result;
+        // Match the durable queue schema when switching between release and repair branches.
+        if(!db.objectStoreNames.contains("jobs")) db.createObjectStore("jobs",{keyPath:"siteId"});
         if(!db.objectStoreNames.contains("sites")) db.createObjectStore("sites",{keyPath:"id"});
         if(!db.objectStoreNames.contains("urls")) {
           const s=db.createObjectStore("urls",{keyPath:["siteId","loc"]});

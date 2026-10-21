@@ -119,7 +119,11 @@ function getIssues(p){
 }
 function render(){
   const p=current.page;
-  for(const btn of document.querySelectorAll('#tabs button'))btn.classList.toggle('active',btn.dataset.tab===current.selected);
+  for(const btn of document.querySelectorAll('#tabs button')){
+    const active=btn.dataset.tab===current.selected;
+    btn.classList.toggle('active',active);
+    if(active)btn.setAttribute('aria-current','page');else btn.removeAttribute('aria-current');
+  }
   if(!current.domain)return;
   if(!p && !['sitemap','domain'].includes(current.selected)){
     mainTabContent(card('无法读取页面', '<div class="warning">当前页面暂不可分析。可以切换到「域名」或「Sitemap」查看公开数据。</div>'));
@@ -132,16 +136,17 @@ function render(){
 function renderOverview(){
   const p=current.page;const titleLength=nchar(p.title),descLength=nchar(p.description);
   const h1=p.headings.filter(h=>h.level===1);
-  const head = metrics([['页面标题',p.title?'已设置':'缺失'],['SEO 问题',getIssues(p).length],['H1 数量',h1.length]]);
-  const titleMeta=card('页面 TDK',field('Title',p.title,titleLength+' 字符')+field('Description',p.description,descLength+' 字符')+field('Keywords（Meta）',p.keywords||'', '仅供查看，Google 通常不将 meta keywords 用于网页排名')+field('Canonical',p.canonical)+field('Robots（Meta）',p.metaRobots)+field('页面语言',p.htmlLang));
-  const pageSummary=card('页面结构',metrics([['H2',p.headings.filter(h=>h.level===2).length],['图片',p.imageStats.total],['链接',p.linkStats.total]])+field('H1',h1.map(x=>x.text).join(' / '))+field('Viewport',p.viewport));
+  const head=`<div class="page-heading"><h1>页面总览</h1><span>当前页面的 SEO 信息</span></div><div class="overview-status"><span>标题<b>${p.title?'已设置':'缺失'}</b></span><span>SEO 问题<b>${getIssues(p).length}</b></span><span>H1<b>${h1.length}</b></span></div>`;
+  const detail=(label,value,count='',limit=0,hint='')=>`<div class="overview-field"><div class="overview-label"><span>${label}</span>${count!==''?`<span title="字符数仅供排版参考，不是排名规则" class="length-badge ${count>limit?'warn':''}">${count} / ${limit}</span>`:''}</div><div class="overview-value">${value?escapeHtml(value):'<span class="muted">未设置</span>'}</div>${hint?'<div class="field-sub">'+escapeHtml(hint)+'</div>':''}</div>`;
+  const titleMeta='<section class="overview-sheet" aria-label="页面标题与描述">'+detail('Title',p.title,titleLength,60)+detail('Description',p.description,descLength,160)+detail('Keywords',p.keywords,'',0,'仅供查看，Google 通常不将 meta keywords 用于网页排名')+detail('URL',p.url)+detail('Canonical',p.canonical)+'</section>';
+  const pageSummary=card('页面结构',metrics([['H2',p.headings.filter(h=>h.level===2).length],['图片',p.imageStats.total],['链接',p.linkStats.total]])+field('H1',h1.map(x=>x.text).join(' / '))+field('Viewport',p.viewport)+field('Robots（Meta）',p.metaRobots)+field('页面语言',p.htmlLang));
   const social=card('Social & Metadata',field('OG Title',p.social.ogTitle)+field('OG Description',p.social.ogDescription)+field('OG Image',p.social.ogImage)+field('Twitter Card',p.social.twitterCard));
   const r=current.rdap;
-  const whois=card('域名信息',r?metrics([['注册日期',r.created?.slice(0,10)||'未知'],['到期日期',r.expires?.slice(0,10)||'未知'],['域名年龄',r.age===null?'未知':r.age.toFixed(1)+'年']])+`<div class="note">来源：RDAP。部分 TLD 不提供到期信息。</div>`:
+  const whois=card('域名信息',r?`<table class="domain-summary"><tbody><tr><th scope="row">注册日期</th><td>${escapeHtml(r.created?.slice(0,10)||'未知')}</td></tr><tr><th scope="row">到期日期</th><td>${escapeHtml(r.expires?.slice(0,10)||'未知')}</td></tr><tr><th scope="row">域名年龄</th><td>${r.age===null?'未知':r.age.toFixed(1)+' 年'}</td></tr></tbody></table><div class="note">来源：RDAP · 部分 TLD 不提供到期信息</div>`:
     `<div class="muted small">${current.rdapError?'RDAP 查询失败：'+escapeHtml(current.rdapError):'正在查询公开 RDAP 数据…'}</div>`);
   const sitemap=card('Sitemap 监控',current.site?metrics([['当前 URL',fmtInt(current.site.lastCount)],['最近新增','+'+fmtInt(current.site.lastAdded)],['最近移出','-'+fmtInt(current.site.lastRemoved)]])+'<button class="button secondary" data-action="goto-sitemap">查看 Sitemap 变化 →</button>':
     `<p class="muted small">当前网站尚未加入监控。可以免费保存 Sitemap 快照，追踪后续变化。</p><button class="button secondary" data-action="goto-sitemap">添加并扫描 Sitemap →</button>`);
-  return `<div class="eyebrow">ON-PAGE SEO OVERVIEW</div>${head}${titleMeta}${whois}${pageSummary}${sitemap}${social}`;
+  return `${head}${whois}${titleMeta}${pageSummary}${sitemap}${social}`;
 }
 function renderIssues(){const p=current.page;const issues=getIssues(p);return `<div class="eyebrow">SEO ISSUES</div>${metrics([['问题数',issues.length],['重点问题',issues.filter(x=>x.severity==='bad').length],['提醒',issues.filter(x=>x.severity==='warn').length]])}`+
   card('页面 SEO 检查',issues.length?issues.map(i=>`<div class="issue ${i.severity}"><strong>${escapeHtml(i.title)}</strong><p>${escapeHtml(i.desc)}</p></div>`).join(''):'<div class="good-panel">当前规则下未发现明显的页面 SEO 问题。此结果不代表完整的 Google SEO 审核。</div>');}
@@ -201,12 +206,15 @@ async function launchScan(add){
     current.scanning=true;current.site=await SiteLensDB.getSite(current.domain);render();
   }catch(err){mainTabContent(`<div class="warning">${escapeHtml(err.message||err)}</div>`);}
 }
-$('tabs').addEventListener('click',ev=>{const tab=ev.target.closest('button[data-tab]');if(!tab)return;current.selected=tab.dataset.tab;render();});
+function selectTab(tab){
+  current.selected=tab;render();$('content').scrollTop=0;
+}
+$('tabs').addEventListener('click',ev=>{const tab=ev.target.closest('button[data-tab]');if(tab)selectTab(tab.dataset.tab);});
 $('refresh').addEventListener('click',()=>loadPage().catch(err=>mainTabContent(card('分析失败',`<div class="warning">${escapeHtml(err.message)}</div>`))));
 $('dashboard').addEventListener('click',()=>chrome.runtime.openOptionsPage());
 $('content').addEventListener('click',ev=>{
   const action=ev.target.closest('[data-action]')?.dataset.action;if(!action)return;
-  if(action==='goto-sitemap'){current.selected='sitemap';render();}
+  if(action==='goto-sitemap')selectTab('sitemap');
   else if(action==='dashboard')chrome.runtime.openOptionsPage();
   else if(action==='dns')fetchDNS().catch(err=>mainTabContent(card('DNS 查询失败',escapeHtml(err.message))));
   else if(action==='scan'||action==='add-scan')launchScan(action==='add-scan');
