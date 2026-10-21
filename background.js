@@ -16,21 +16,21 @@ async function runQueue(){
     const job=await SiteLensDB.claimJob();
     if(!job)return;
     try {
-      if(job.attempts>3 || Date.now()-job.startedAt>SiteLensDB.JOB_MS)
+      if(job.attempts>3 || Date.now()-job.startedAt>=SiteLensDB.JOB_MS)
         throw new Error("Scan interrupted repeatedly or exceeded 30 minute deadline");
       if(job.state?.phase==="done"){
         const state=job.state;
         const summary=await SiteLensDB.commitScan(job.siteId,state.pages,{
-          root:state.roots.join(", "),files:state.visited.length,complete:true
+          root:state.roots.join(", "),files:state.visited.length,sources:state.visited,complete:true
         },job);
+        if(summary.status==="stale")return;
         notify(job.siteId,summary,summary.status==="review"?"异常结果待复核，旧快照已保留":undefined);
       }else{
         const state=await SiteLensSitemap.step(job.state||SiteLensSitemap.initial(job.siteId));
-        await SiteLensDB.checkpoint(job,state);
+        if(!await SiteLensDB.checkpoint(job,state))return;
       }
     }catch(error){
-      await SiteLensDB.failJob(job,error);
-      notify(job.siteId,null,String(error?.message||error));
+      if(await SiteLensDB.failJob(job,error))notify(job.siteId,null,String(error?.message||error));
     }
   }while(Date.now()<until);
 }
@@ -41,8 +41,7 @@ function pump(){
 async function boot(){
   await initAlarms();
   // v1 had no durable jobs. Surface interrupted legacy scans for a fresh scan.
-  const sites=await SiteLensDB.listSites(), jobs=await SiteLensDB.listJobs();
-  await SiteLensDB.enqueueSites(sites.filter(s=>s.lastStatus==="scanning"&&!jobs.some(j=>j.siteId===s.id)).map(s=>s.id));
+  await SiteLensDB.recoverJobs();
   await pump();
 }
 chrome.runtime.onInstalled.addListener(()=>{boot().catch(console.error);});

@@ -88,6 +88,25 @@ const assert=require('node:assert/strict');
     const second=await page.evaluate(async()=>({site:await SiteLensDB.getSite('second.test'),scans:await SiteLensDB.listScans('second.test')}));
     assert.equal(second.site.lastCount,5);assert.equal(second.scans.length,1);
     console.log('PASS real Chrome daily alarm persists and drains a two-site batch');
+    const beforeReview=await inspect();root=xml(['a']);
+    await send('SITELENS_SCAN_SITE',{domain:host});
+    result=await waitFor(v=>v.site.lastStatus==='review'&&v.jobs[0]?.reviewAttempt,'anomaly held');
+    assert.equal(result.urls.length,5);assert.equal(result.changes.length,beforeReview.changes.length);
+    // Age persisted evidence to exercise the real Chrome confirmation transaction;
+    // interval boundary and stale evidence rejection are covered by Node clocks.
+    await page.evaluate(async()=>{
+      const site=await SiteLensDB.getSite('lens.test'),job=(await SiteLensDB.listJobs())[0];
+      const db=await new Promise(r=>{const q=indexedDB.open('sitelens',2);q.onsuccess=()=>r(q.result);});
+      await new Promise((resolve,reject)=>{const tx=db.transaction(['sites','jobs'],'readwrite');
+        tx.objectStore('sites').put({...site,review:{...site.review,at:Date.now()-300100}});
+        tx.objectStore('jobs').put({...job,readyAt:0});tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
+      });db.close();await chrome.alarms.create('sitelens-queue',{when:Date.now()+100});
+    });
+    result=await waitFor(v=>!v.jobs.length&&v.site.lastStatus==='success'&&v.urls.length===1,'independent anomaly confirmation');
+    assert.equal(result.changes.length,beforeReview.changes.length+4);
+    assert.equal(result.scans.filter(s=>s.status==='success').length,beforeReview.scans.filter(s=>s.status==='success').length+1);
+    assert.equal(result.site.review,null);
+    console.log('PASS real Chrome anomaly retains baseline until independent complete confirmation');
     console.log('Browser: '+context.browser().version());
   }finally{
     release?.();await context?.close();

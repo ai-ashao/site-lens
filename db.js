@@ -74,8 +74,28 @@ const SiteLensDB = (() => {
   }
   async function listChanges(siteId,limit=300){return getRecent("changes",siteId,limit);}
   async function listScans(siteId,limit=60){return getRecent("scans",siteId,limit);}
-  const LEASE_MS=60000, JOB_MS=30*60*1000, REVIEW_MS=5*60*1000;
+  const LEASE_MS=60000, JOB_MS=30*60*1000, REVIEW_MS=5*60*1000, REVIEW_MAX_MS=30*60*1000;
   async function listJobs(){return read("jobs",s=>s.getAll());}
+  function newJob(siteId,now,extra={}){
+    return {siteId,scanId:crypto.randomUUID(),createdAt:now,readyAt:now,attempts:0,state:null,...extra};
+  }
+  async function recoverJobs(now=Date.now()){
+    // Read status and task existence in the same transaction as insertion. A boot
+    // racing a successful commit must not resurrect its old "scanning" status.
+    await write(["sites","jobs"],tx=>{
+      tx.objectStore("sites").getAll().onsuccess=e=>{
+        for(const site of e.target.result){
+          if(site.lastStatus!=="scanning")continue;
+          const jobs=tx.objectStore("jobs");
+          jobs.get(site.id).onsuccess=e=>{
+            if(e.target.result)return;
+            jobs.put(newJob(site.id,now));
+            tx.objectStore("sites").put({...site,lastStatus:"queued"});
+          };
+        }
+      };
+    });
+  }
   async function enqueueSites(ids,now=Date.now()){
     // Unique site key and a single transaction deduplicate manual/daily requests.
     await write(["sites","jobs"],tx=>{
@@ -85,7 +105,7 @@ const SiteLensDB = (() => {
           if(e.target.result)return;
           tx.objectStore("sites").get(siteId).onsuccess=e=>{
             if(!e.target.result)return;
-            jobs.put({siteId,createdAt:now,readyAt:now,attempts:0,state:null});
+            jobs.put(newJob(siteId,now));
             tx.objectStore("sites").put({...e.target.result,lastStatus:"queued"});
           };
         };
@@ -101,7 +121,7 @@ const SiteLensDB = (() => {
         if(rows.some(j=>j.leaseUntil>now))return;
         const job=rows.filter(j=>j.readyAt<=now).sort((a,b)=>a.createdAt-b.createdAt||a.siteId.localeCompare(b.siteId))[0];
         if(!job)return;
-        claimed={...job,startedAt:job.startedAt??now,token:crypto.randomUUID(),leaseUntil:now+LEASE_MS,attempts:job.attempts+1};
+        claimed={...job,scanId:job.scanId||crypto.randomUUID(),startedAt:job.startedAt??now,token:crypto.randomUUID(),leaseUntil:now+LEASE_MS,attempts:job.attempts+1};
         jobs.put(claimed);
         tx.objectStore("sites").get(job.siteId).onsuccess=e=>{
           if(e.target.result)tx.objectStore("sites").put({...e.target.result,lastStatus:"scanning"});
@@ -111,14 +131,22 @@ const SiteLensDB = (() => {
     return claimed;
   }
   // Fence all writes by lease token: a late response cannot overwrite a resumed job.
-  async function fenced(job,stores,fn){
-    let applied=false;
+  async function fenced(job,stores,fn,active=true){
+    let applied=false,invalid=null;
     await write([...new Set(["jobs",...stores])],tx=>{
       tx.objectStore("jobs").get(job.siteId).onsuccess=e=>{
-        if(e.target.result?.token!==job.token)return;
+        const current=e.target.result,now=Date.now();
+        if(!job.token || current?.token!==job.token)return;
+        if(active){
+          if(now-current.startedAt>=JOB_MS)invalid="Scan deadline expired before write";
+          else if(now>=current.leaseUntil)invalid="Scan lease expired before write";
+          else if(current.attempts>3)invalid="Scan interruption limit exceeded";
+          if(invalid)return;
+        }
         applied=true;fn(tx);
       };
     });
+    if(invalid)throw new Error(invalid);
     return applied;
   }
   async function checkpoint(job,state,now=Date.now()){
@@ -127,7 +155,7 @@ const SiteLensDB = (() => {
   async function failJob(job,error,now=Date.now()){
     const retry=job.attempts<3 && now-job.startedAt<JOB_MS;
     const message=String(error?.message||error).slice(0,400);
-    await fenced(job,["sites","scans"],tx=>{
+    return fenced(job,["sites","scans"],tx=>{
       const jobs=tx.objectStore("jobs");
       if(retry)jobs.put({...job,token:null,leaseUntil:0,readyAt:now+60000});
       else jobs.delete(job.siteId);
@@ -135,7 +163,7 @@ const SiteLensDB = (() => {
         if(e.target.result)tx.objectStore("sites").put({...e.target.result,lastStatus:retry?"queued":"error",lastScanAt:now,lastError:message});
       };
       if(!retry)tx.objectStore("scans").add({siteId:job.siteId,at:now,status:"error",error:message});
-    });
+    },false);
   }
   async function commitScan(id,pages,info,job){
     if(!job || job.siteId!==id || info.complete!==true || job.state?.phase!=="done")
@@ -146,21 +174,27 @@ const SiteLensDB = (() => {
     const before=new Map(previous.map(row=>[row.loc,row]));
     const after=new Map(pages.map(row=>[row.loc,row]));
     const baseline=!site.lastSuccessAt;
-    const at=Date.now();const events=[];
+    const events=[];
     const missing=previous.filter(row=>!after.has(row.loc)).length;
-    const sourceChanged=(site.sitemapUrl && site.sitemapUrl!==info.root) || info.files<site.sitemapFiles;
+    const sources=[...new Set(info.sources||job.state.visited)].sort();
+    const lostSource=site.sitemapSources?.some(url=>!sources.includes(url));
+    const sourceChanged=lostSource || (site.sitemapUrl && site.sitemapUrl!==info.root) || info.files<site.sitemapFiles;
     const suspicious=!baseline && (after.size<=before.size*0.7 || missing>=before.size*0.3 || sourceChanged);
-    const canonical=JSON.stringify({root:info.root,files:info.files,pages:[...after.values()].sort((a,b)=>a.loc.localeCompare(b.loc))});
+    const canonical=JSON.stringify({root:info.root,files:info.files,sources,pages:[...after.values()].sort((a,b)=>a.loc.localeCompare(b.loc))});
     const fingerprint=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(canonical))),b=>b.toString(16).padStart(2,"0")).join("");
-    if(suspicious && !(site.review?.fingerprint===fingerprint && at-site.review.at>=REVIEW_MS)){
+    const at=Date.now();
+    const review=site.review;
+    const freshReview=review?.scanId && review.baselineAt===site.lastSuccessAt && at>=review.at && at-review.at<=REVIEW_MAX_MS;
+    const confirmed=freshReview && review.scanId!==job.scanId && review.fingerprint===fingerprint && job.startedAt>=review.at+REVIEW_MS;
+    if(suspicious && !confirmed){
       const message="Sitemap URL 数量、覆盖范围或入口异常；保留旧快照，需独立完整复核";
       const applied=await fenced(job,["sites","scans"],tx=>{
         tx.objectStore("sites").put({...site,lastStatus:"review",lastScanAt:at,lastError:message,
-          review:{fingerprint,at,total:after.size}});
+          review:{fingerprint,at,total:after.size,scanId:job.scanId,baselineAt:site.lastSuccessAt}});
         tx.objectStore("scans").add({siteId:id,at,status:"review",total:after.size,error:message});
         // One independent refetch after five minutes. Unstable candidates require
         // another manual/daily scan instead of an endless automatic retry loop.
-        if(!job.reviewAttempt)tx.objectStore("jobs").put({siteId:id,createdAt:at,readyAt:at+REVIEW_MS,attempts:0,state:null,reviewAttempt:true});
+        if(!job.reviewAttempt || !freshReview)tx.objectStore("jobs").put(newJob(id,at,{readyAt:at+REVIEW_MS,reviewAttempt:true}));
         else tx.objectStore("jobs").delete(id);
       });
       return {status:applied?"review":"stale",total:after.size};
@@ -180,7 +214,7 @@ const SiteLensDB = (() => {
     const updated=events.filter(e=>e.type==="lastmod").length;
     const updatedSite={...site,lastStatus:"success",lastScanAt:at,lastSuccessAt:at,lastError:null,
       review:null,lastCount:after.size,lastAdded:added,lastRemoved:removed,lastUpdated:updated,
-      sitemapUrl:info.root,sitemapFiles:info.files};
+      sitemapUrl:info.root,sitemapFiles:info.files,sitemapSources:sources};
     const applied=await fenced(job,["sites","urls","scans","changes"],tx=>{
       tx.objectStore("jobs").delete(id);
       tx.objectStore("sites").put(updatedSite);
@@ -203,5 +237,5 @@ const SiteLensDB = (() => {
     });
   }
   return {normalizeDomain,getSite,listSites,addSite,putSite,getSiteUrls,listChanges,listScans,
-    enqueueSites,listJobs,claimJob,checkpoint,failJob,commitScan,deleteSite,JOB_MS};
+    recoverJobs,enqueueSites,listJobs,claimJob,checkpoint,failJob,commitScan,deleteSite,JOB_MS};
 })();
