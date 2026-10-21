@@ -1,0 +1,14 @@
+{
+  "name": "sitelens",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "test:chrome": "node tests/chrome.cjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.4",
+    "jsdom": "^26.1.0",
+    "playwright": "^1.56.1"
+  }
+}

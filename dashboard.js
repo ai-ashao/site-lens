@@ -4,7 +4,7 @@ const labels={added:"新增 URL",removed:"移出 Sitemap",lastmod:"lastmod 变�
 function escapeHTML(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function dtime(t){return t?new Date(t).toLocaleString("zh-CN",{hour12:false}):"—";}
 function number(n){return Number(n||0).toLocaleString("en-US");}
-function pill(status){const names={pending:"未扫描",scanning:"扫描中",success:"正常",error:"失败"};return '<span class="pill '+status+'">'+(names[status]||"未知")+"</span>";}
+function pill(status){const names={pending:"未扫描",queued:"等待扫描",review:"待复核",scanning:"扫描中",success:"正常",error:"失败"};return '<span class="pill '+status+'">'+(names[status]||"未知")+"</span>";}
 function toast(value,error=false) {const node=$("toast");node.textContent=value;node.className="toast visible"+(error?" error":"");clearTimeout(toast.timer);toast.timer=setTimeout(()=>node.className="toast",4200);}
 async function send(type,data={}){
   const out=await chrome.runtime.sendMessage({type,...data});
@@ -54,7 +54,7 @@ function renderSite(site){
       <div class="panel"><h3>最近监测动作</h3>${changesTable(state.changes.slice(0,12),true)}</div>
       <div class="panel"><h3>扫描历史</h3>${state.scans.length?'<div class="timeline">'+state.scans.slice(0,14).map(s=>
         '<div class="timeline-row"><span class="timeline-dot '+(s.status==="success"?"":"failed")+'"></span><div><div class="strong">'+escapeHTML(dtime(s.at))+'</div><div class="muted tiny">'+
-        (s.status==="error"?"失败 · "+escapeHTML(s.error||""):(s.baseline?"首次基线":"新增 "+s.added+" / 移出 "+s.removed+" / 更新 "+s.updated)+" · 总计 "+number(s.total||0)+" URL")+
+        (["error","review"].includes(s.status)?(s.status==="review"?"待复核 · ":"失败 · ")+escapeHTML(s.error||""):(s.baseline?"首次基线":"新增 "+s.added+" / 移出 "+s.removed+" / 更新 "+s.updated)+" · 总计 "+number(s.total||0)+" URL")+
         '</div></div></div>').join("")+'</div>':'<div class="muted block-padding">暂无扫描历史</div>'}
       <div class="info-note">Sitemap 入口：${escapeHTML(site.sitemapUrl||"等待首次扫描")}</div><div class="muted tiny">Sitemap 文件数：${number(site.sitemapFiles)}</div>
       </div></div>`;

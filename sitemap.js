@@ -39,55 +39,81 @@ const SiteLensSitemap = (()=>{
     }).finally(()=>{creatingOffscreen=null;});
     await creatingOffscreen;
   }
-  async function parseXml(xml){
+  async function parseXmlInner(xml){
     await ensureOffscreen();
     const reply=await chrome.runtime.sendMessage({type:"SITELENS_PARSE_XML",xml});
     if(!reply?.ok) throw new Error(reply?.error||"Unable to parse Sitemap XML");
     return reply;
   }
-  async function collect(host){
-    const start="https://"+host+"/";
-    let declared=[];
-    try {
-      const robots=await getText(new URL("robots.txt",start).href,host);
-      declared=robots.split(/\r?\n/).map(line=>line.match(/^\s*sitemap\s*:\s*(\S+)/i)?.[1])
-        .filter(Boolean).map(v=>absoluteUrl(v,start,host)).filter(Boolean);
-    } catch {} // A missing robots file is normal; use common Sitemap paths.
-    const fallbacks=["sitemap.xml","sitemap_index.xml","wp-sitemap.xml"].map(p=>new URL(p,start).href);
-    let rootUrls=[],rootResults=[];
-    if(declared.length) {
-      rootUrls=[...new Set(declared)];
-      for(const url of rootUrls) rootResults.push({url,data:await parseXml(await getText(url,host))});
-    } else {
-      let lastError;
-      for(const url of fallbacks) {
-        try {rootResults=[{url,data:await parseXml(await getText(url,host))}];rootUrls=[url];break;}
-        catch(e){lastError=e;}
-      }
-      if(!rootResults.length) throw new Error("No public Sitemap found. "+String(lastError?.message||""));
-    }
-    const queue=[...rootResults], visited=new Set(),pageMap=new Map();
-    let processed=0;
-    while(queue.length){
-      const item=queue.shift();
-      if(visited.has(item.url)) continue;
-      visited.add(item.url); processed++;
-      if(processed>MAX_FILES) throw new Error("More than "+MAX_FILES+" Sitemap files; keeping previous scan unchanged");
-      const data=item.data||await parseXml(await getText(item.url,host));
-      if(data.kind==="index"){
-        for(const raw of data.links){
-          const loc=absoluteUrl(raw,item.url,host);
-          if(loc&&!visited.has(loc) && !queue.some(x=>x.url===loc)) queue.push({url:loc});
-        }
-      } else {
-        for(const row of data.pages){
-          const loc=absoluteUrl(row.loc,item.url,host);
-          if(loc) pageMap.set(loc,{loc,lastmod:row.lastmod||""});
-          if(pageMap.size>MAX_URLS) throw new Error("More than "+MAX_URLS+" URLs; keeping previous scan unchanged");
-        }
-      }
-    }
-    return {pages:[...pageMap.values()],root:rootUrls.join(", "),files:processed};
+  async function parseXml(xml){
+    let timer;
+    try{return await Promise.race([parseXmlInner(xml),new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error("Sitemap parser timeout")),TIMEOUT_MS);
+    })]);}finally{clearTimeout(timer);}
   }
-  return {collect};
+  // One network document per step. The caller persists the returned state before
+  // taking another step; only the unfinished document can be fetched again.
+  function initial(host){return {phase:"robots",host,roots:[],pending:[],visited:[],pages:[]};}
+  function requiredUrl(raw,base,host){
+    if(!raw || !String(raw).trim()) throw new Error("Incomplete Sitemap: missing loc");
+    const loc=absoluteUrl(raw,base,host);
+    if(!loc) throw new Error("Incomplete Sitemap: cross-domain or invalid loc: "+raw);
+    return loc;
+  }
+  async function step(saved){
+    const state=structuredClone(saved),host=state.host,start="https://"+host+"/";
+    if(state.phase==="robots"){
+      let robots="";
+      try {robots=await getText(new URL("robots.txt",start).href,host);}
+      catch(e){if(!/^HTTP (404|410) at /.test(e.message)) throw e;}
+      const declarations=robots.split(/\r?\n/).map(line=>line.match(/^\s*sitemap\s*:\s*(\S+)/i)?.[1]).filter(Boolean);
+      state.roots=[...new Set(declarations.map(raw=>requiredUrl(raw,start,host)))];
+      state.pending=[...state.roots];state.phase=state.roots.length?"files":"fallback";
+      state.fallback=0;return state;
+    }
+    let url,data;
+    if(state.phase==="fallback"){
+      url=new URL(["sitemap.xml","sitemap_index.xml","wp-sitemap.xml"][state.fallback],start).href;
+      try {data=await parseXml(await getText(url,host));}
+      catch(e){
+        // Only an absent path permits discovery to continue. Invalid XML, network
+        // errors or access denial cannot establish that a smaller source is complete.
+        if(!/^HTTP (404|410) at /.test(e.message) || ++state.fallback===3) throw e;
+        return state;
+      }
+      state.roots=[url];state.pending=[url];state.phase="files";
+    }
+    url=state.pending[0];
+    if(!url) throw new Error("Missing Sitemap work item");
+    if(state.visited.length>=MAX_FILES) throw new Error("Sitemap file limit exceeded");
+    data=data||await parseXml(await getText(url,host));
+    if(data.kind==="index"){
+      if(!Array.isArray(data.links)||!data.links.length) throw new Error("Empty Sitemap index; completeness unknown");
+      for(const raw of data.links){
+        const loc=requiredUrl(raw,url,host);
+        if(!state.visited.includes(loc)&&!state.pending.includes(loc))state.pending.push(loc);
+      }
+    }else if(data.kind==="urls"&&Array.isArray(data.pages)){
+      const pages=new Map(state.pages.map(row=>[row.loc,row]));
+      for(const row of data.pages){
+        const loc=requiredUrl(row.loc,url,host),lastmod=row.lastmod||"";
+        if(pages.has(loc)&&pages.get(loc).lastmod!==lastmod) throw new Error("Conflicting lastmod for "+loc);
+        pages.set(loc,{loc,lastmod});
+        if(pages.size>MAX_URLS)throw new Error("Sitemap URL limit exceeded");
+      }
+      // Empty leaves can mean a transient outage even inside a nonempty index.
+      if(!data.pages.length)throw new Error("Empty Sitemap; previous snapshot retained");
+      state.pages=[...pages.values()];
+    }else throw new Error("Invalid Sitemap parser response");
+    state.visited.push(url);state.pending.shift();
+    if(state.visited.length+state.pending.length>MAX_FILES) throw new Error("Sitemap file limit exceeded");
+    if(!state.pending.length)state.phase="done";
+    return state;
+  }
+  async function collect(host){
+    let state=initial(host);
+    while(state.phase!=="done")state=await step(state);
+    return {pages:state.pages,root:state.roots.join(", "),files:state.visited.length,complete:true};
+  }
+  return {initial,step,collect};
 })();
