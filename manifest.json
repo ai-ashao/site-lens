@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "SiteLens — SEO Competitor Monitor",
+  "version": "0.1.0",
+  "description": "Track competitor sitemaps, new URLs and SEO changes locally, without paid APIs.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "offscreen",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "SiteLens",
+    "default_popup": "popup.html"
+  },
+  "options_page": "dashboard.html"
+}
